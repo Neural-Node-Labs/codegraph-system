@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Codegraph Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<style>
+  html, body { margin:0; height:100%; font-family: -apple-system, Segoe UI, sans-serif; background:#0f1117; color:#e6e6e6; }
+  #cy { width:100%; height:100%; }
+  #note { position:absolute; top:10px; left:10px; z-index:10; background:#1a1d27; padding:10px 14px; border-radius:8px; font-size:12px; max-width:400px; }
+</style>
+</head>
+<body>
+<div id="note">This static page is a minimal fallback view. Use the codegraph-ui React app for the full interactive experience (login, relations table, admin).</div>
+<div id="cy"></div>
+<script>
+async function load() {
+  const res = await fetch('/api/graph', { headers: { 'X-API-Key': new URLSearchParams(location.search).get('key') || '' } });
+  if (!res.ok) {
+    document.getElementById('note').innerText = 'Pass ?key=<your_api_key> in the URL to view the graph here, or use the React UI.';
+    return;
+  }
+  const data = await res.json();
+  const elements = [
+    ...data.nodes.map(n => ({ data: { id: 'n'+n.id, label: n.name } })),
+    ...data.edges.map(e => ({ data: { id: 'e'+e.id, source: 'n'+e.source_id, target: 'n'+e.target_id } }))
+  ];
+  cytoscape({
+    container: document.getElementById('cy'),
+    elements,
+    style: [
+      { selector: 'node', style: { 'background-color': '#5b9dff', 'label': 'data(label)', 'color': '#e6e6e6', 'font-size': 8 } },
+      { selector: 'edge', style: { 'width': 1, 'line-color': '#444', 'target-arrow-shape': 'triangle', 'target-arrow-color': '#444', 'curve-style': 'bezier' } }
+    ],
+    layout: { name: 'cose' }
+  });
+}
+load();
+</script>
+</body>
+</html>

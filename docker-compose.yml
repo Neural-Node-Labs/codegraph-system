@@ -1,0 +1,29 @@
+services:
+  codegraph-api:
+    build:
+      context: ./codegraph
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./codegraph/sample_repo:/repo:ro   # point this at your own repo
+      - codegraph_data:/data
+    environment:
+      - REPO_PATH=/repo
+      - REINDEX=true
+      - CODEGRAPH_SECRET_KEY=change-this-in-production
+      - ADMIN_PASSWORD=admin123
+    restart: unless-stopped
+
+  codegraph-ui:
+    build:
+      context: ./codegraph-ui
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - codegraph-api
+    restart: unless-stopped
+
+volumes:
+  codegraph_data:

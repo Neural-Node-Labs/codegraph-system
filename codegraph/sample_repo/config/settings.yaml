@@ -1,0 +1,6 @@
+app:
+  name: sample-app
+  port: 8080
+database:
+  pool_size: 5
+  timeout_seconds: 30
