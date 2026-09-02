@@ -1,14 +1,30 @@
 # Codegraph Backend
 
 A dependency-graph mapper for code, config, and pages/routes — with auth,
-per-user API keys, user administration, and a read-only query API meant to
-be consumed by an LLM (via the companion MCP server) or the codegraph-ui
-frontend for codebase exploration.
+per-user API keys, user administration, multi-project management, and a
+read-only query API meant to be consumed by an LLM (via the companion MCP
+server) or the codegraph-ui frontend for codebase exploration.
 
 **All extraction is 100% deterministic static analysis** — Python's `ast`
 module for Python, structural regex for JS/TS/config/routes. No LLM is
 involved in building the graph. An LLM only *reads* the finished graph
 through the API or MCP tools.
+
+## Projects
+
+Codegraph indexes multiple codebases side by side. Each **project** is:
+- a row in the `projects` table (name, slug, status, last index stats), and
+- a source directory on disk at `PROJECTS_ROOT/<slug>` (default
+  `/data/projects/<slug>`, persisted in the `codegraph_data` volume).
+
+Every node/edge is tagged with `project_id`, so all graph-query endpoints
+take `project_id` as a required query param — nothing leaks across
+projects.
+
+Typical flow: `POST /api/projects` to create one → `POST
+/api/projects/{id}/upload` with a `.zip` (auto-extracted server-side, zip-
+slip guarded) → `POST /api/projects/{id}/index` to run the indexer → query
+away with `?project_id=...`.
 
 ## What it extracts
 
@@ -41,8 +57,9 @@ From the repo root (one level up):
 docker compose up --build
 ```
 
-This indexes the bundled `sample_repo/` and starts the API at
-**http://localhost:8000** (and the UI at http://localhost:5173).
+This starts the API at **http://localhost:8000** (and the UI at
+http://localhost:5173) with no projects yet — create one from the UI's
+Projects tab or the API (see below).
 
 To run just this service standalone:
 ```bash
@@ -50,18 +67,37 @@ cd codegraph
 docker compose up --build
 ```
 
-## Point it at your own repo
+## Adding a project's source
 
-Edit `docker-compose.yml` and change the volume mount:
+From the UI: **Projects** tab → **New project** → drag a `.zip` onto the
+card → **Index**.
 
-```yaml
-volumes:
-  - /path/to/your/repo:/repo:ro
+From the API:
+```bash
+curl -X POST http://localhost:8000/api/projects \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"name": "my-service", "description": "optional"}'
+# -> {"id": 2, "slug": "my-service", "status": "empty", ...}
+
+curl -X POST http://localhost:8000/api/projects/2/upload \
+  -H "X-API-Key: $KEY" -F "file=@my-service.zip" -F "replace=true"
+# extracts the zip into PROJECTS_ROOT/my-service, unwrapping a single
+# top-level folder inside the zip if present
+
+curl -X POST http://localhost:8000/api/projects/2/index -H "X-API-Key: $KEY"
+# runs the indexer over that project's source and rebuilds its graph
 ```
 
-Then `docker compose up --build` again, or just call `POST /api/refresh`
-(or hit "Refresh mapping" in the UI) after the container is already running
-with the new volume mounted.
+`replace=true` (the default) clears the project's existing source directory
+before extracting; pass `replace=false` to extract on top of what's there.
+
+### Legacy single-repo bootstrap
+
+If `REPO_PATH` is set (see `docker-compose.yml`) and points at a non-empty
+directory, the container copies it into a `default` project and indexes it
+automatically — but only once, on first boot, and only if no projects exist
+yet. This exists purely so upgrades from the old single-repo setup don't
+need manual steps; new projects should be created via the UI/API.
 
 ## Auth
 
@@ -87,29 +123,40 @@ docker compose logs codegraph-api | grep -A3 "First boot"
 | `POST /api/admin/users/{id}/regenerate-key` | rotate a user's API key |
 | `DELETE /api/admin/users/{id}` | delete a user |
 
-## Refreshing the mapping
+## Project management
 
-`POST /api/refresh` re-runs the indexer against `REPO_PATH` and rebuilds
-`nodes`/`edges` in place — it does **not** touch the `users` table. Any
-authenticated user can call it (not just admins), since re-indexing only
-reads the repo and never mutates it.
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/projects` | any user | list all projects with status + node/edge counts |
+| `POST /api/projects` | admin | create a project `{name, description?}` |
+| `GET /api/projects/{id}` | any user | get one project |
+| `PATCH /api/projects/{id}` | admin | rename / update description |
+| `DELETE /api/projects/{id}` | admin | delete a project, its graph rows, and its source directory |
+| `POST /api/projects/{id}/upload` | admin | multipart `.zip` upload (`file`, optional `replace=true\|false`), auto-extracted into the project's directory |
+| `POST /api/projects/{id}/index` | any user | re-run the indexer for this project, rebuild its slice of the graph |
+
+Indexing is available to any authenticated user (it only reads the
+project's already-uploaded source and never mutates it); creating,
+renaming, deleting projects, and uploading new source are admin-only since
+they change what's on disk.
 
 ## API (for LLM / programmatic exploration)
 
+Every endpoint below requires `project_id` as a query param.
+
 | Endpoint                                  | Purpose                                      |
 |--------------------------------------------|-----------------------------------------------|
-| `GET /api/search?q=...`                    | full-text search over node names/signatures  |
-| `GET /api/nodes/{id}`                      | get one node                                 |
-| `GET /api/nodes?type=Route`                | list/filter nodes                            |
-| `GET /api/edges?type=&resolved=&q=&limit=&offset=` | flat, filterable, joined listing of every relation — for a table-style "inspect every relation" view |
-| `GET /api/nodes/{id}/dependencies?depth=N` | what this node depends on                    |
-| `GET /api/nodes/{id}/dependents?depth=N`   | what depends on this node                    |
-| `GET /api/nodes/{id}/impact?depth=N`       | blast radius of changing this node           |
-| `GET /api/path?source=ID&target=ID`        | shortest dependency path between two nodes   |
-| `GET /api/unresolved`                      | edges static analysis couldn't resolve       |
-| `GET /api/graph?type=...`                  | full graph as `{nodes, edges}` JSON          |
-| `GET /api/stats`                           | node/edge counts by type                     |
-| `POST /api/refresh`                        | re-run the indexer, rebuild the graph        |
+| `GET /api/search?project_id=&q=...`        | full-text search over node names/signatures  |
+| `GET /api/nodes/{id}?project_id=`          | get one node                                 |
+| `GET /api/nodes?project_id=&type=Route`    | list/filter nodes                            |
+| `GET /api/edges?project_id=&type=&resolved=&q=&limit=&offset=` | flat, filterable, joined listing of every relation — for a table-style "inspect every relation" view |
+| `GET /api/nodes/{id}/dependencies?project_id=&depth=N` | what this node depends on        |
+| `GET /api/nodes/{id}/dependents?project_id=&depth=N`   | what depends on this node        |
+| `GET /api/nodes/{id}/impact?project_id=&depth=N`       | blast radius of changing this node |
+| `GET /api/path?project_id=&source=ID&target=ID`        | shortest dependency path between two nodes |
+| `GET /api/unresolved?project_id=`          | edges static analysis couldn't resolve       |
+| `GET /api/graph?project_id=&type=...`      | full graph as `{nodes, edges}` JSON          |
+| `GET /api/stats?project_id=`               | node/edge counts by type                     |
 
 All responses are raw structured JSON — facts extracted from source, never a
 model-generated summary. This is deliberate: the LLM consuming this API does
@@ -120,15 +167,20 @@ its own reasoning over verified facts instead of trusting a paraphrase.
 See `../codegraph-mcp/README.md` for the full MCP server that wraps this API
 as agent tools, with exact setup for Claude Code and Claude Desktop. The
 short version: give the agent an API key (from the Admin UI) and point the
-MCP server's `CODEGRAPH_API_URL` at this service.
+MCP server's `CODEGRAPH_API_URL` at this service; it discovers projects via
+the `list_projects` tool.
 
 ## Running without Docker
 
 ```bash
 pip install -r requirements.txt
-PYTHONPATH=. python -m app.indexer sample_repo   # or your repo path
+export CODEGRAPH_DB=./graph.db
+export PROJECTS_ROOT=./projects
 PYTHONPATH=. uvicorn app.api:app --reload
 ```
+Then create a project and upload/index it through the API as shown above
+(or point `python -m app.indexer <project_id> <path>` at a source directory
+once you have a project id).
 
 ## Extending
 
@@ -138,11 +190,12 @@ PYTHONPATH=. uvicorn app.api:app --reload
 - **New route framework** (Django, NestJS, Rails): add a decorator/pattern
   matcher similar to `route_parser.py`.
 - **Incremental re-indexing**: currently the indexer does a full rebuild
-  (`clear_graph` + re-parse) each run. For large repos, add a file-hash
-  cache table and only re-parse changed files.
+  (`clear_graph` + re-parse) per project on each run. For large repos, add a
+  file-hash cache table and only re-parse changed files.
 - **Swap SQLite for Neo4j**: the `db.py` interface (`upsert_node`,
   `add_edge`) is small enough to reimplement against a Cypher driver for
-  large monorepos needing indexed multi-hop traversal.
+  large monorepos needing indexed multi-hop traversal — `project_id` maps
+  naturally to a graph label or partition key.
 
 ## Known limitations (by design, not silently hidden)
 
@@ -155,5 +208,8 @@ PYTHONPATH=. uvicorn app.api:app --reload
 - Route-to-call matching is path-shape based (`:id`, `<id>`, `{id}`
   placeholders); template literals like `` `/api/users/${id}` `` are
   captured as unresolved rather than guessed at.
-- `POST /api/refresh` is blocking — for very large repos, expect the request
-  to take a while; there's no background-job/polling variant yet.
+- `POST /api/projects/{id}/index` is blocking — for very large repos,
+  expect the request to take a while; there's no background-job/polling
+  variant yet.
+- Zip uploads are capped at `MAX_UPLOAD_BYTES` (env var, default 200MB) for
+  both the compressed upload and the extracted contents.

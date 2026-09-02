@@ -30,6 +30,16 @@ export function setStoredUser(user) {
   else localStorage.removeItem("codegraph_user");
 }
 
+export function getSelectedProjectId() {
+  const raw = localStorage.getItem("codegraph_project_id");
+  return raw ? Number(raw) : null;
+}
+
+export function setSelectedProjectId(id) {
+  if (id === null || id === undefined) localStorage.removeItem("codegraph_project_id");
+  else localStorage.setItem("codegraph_project_id", String(id));
+}
+
 class ApiError extends Error {
   constructor(status, message) {
     super(message);
@@ -37,7 +47,9 @@ class ApiError extends Error {
   }
 }
 
-/** Authenticated fetch wrapper. Throws ApiError on non-2xx. */
+/** Authenticated fetch wrapper. Throws ApiError on non-2xx.
+ * Pass a FormData instance as `body` (e.g. for file uploads) and it will be
+ * sent as multipart/form-data instead of JSON. */
 export async function apiFetch(path, { method = "GET", body, params } = {}) {
   const url = new URL(getApiUrl() + path);
   if (params) {
@@ -46,14 +58,15 @@ export async function apiFetch(path, { method = "GET", body, params } = {}) {
     });
   }
 
-  const headers = { "Content-Type": "application/json" };
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  const headers = isFormData ? {} : { "Content-Type": "application/json" };
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const res = await fetch(url.toString(), {
     method,
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body ? (isFormData ? body : JSON.stringify(body)) : undefined,
   });
 
   if (res.status === 401) {
@@ -79,11 +92,10 @@ export const api = {
   login: (username, password) => apiFetch("/api/auth/login", { method: "POST", body: { username, password } }),
   me: () => apiFetch("/api/auth/me"),
 
-  graph: (type) => apiFetch("/api/graph", { params: { type } }),
-  stats: () => apiFetch("/api/stats"),
-  search: (q, limit) => apiFetch("/api/search", { params: { q, limit } }),
-  edges: (params) => apiFetch("/api/edges", { params }),
-  refresh: () => apiFetch("/api/refresh", { method: "POST" }),
+  graph: (projectId, type) => apiFetch("/api/graph", { params: { project_id: projectId, type } }),
+  stats: (projectId) => apiFetch("/api/stats", { params: { project_id: projectId } }),
+  search: (projectId, q, limit) => apiFetch("/api/search", { params: { project_id: projectId, q, limit } }),
+  edges: (projectId, params) => apiFetch("/api/edges", { params: { project_id: projectId, ...params } }),
 
   adminListUsers: () => apiFetch("/api/admin/users"),
   adminCreateUser: (username, password, role) =>
@@ -91,6 +103,21 @@ export const api = {
   adminUpdateUser: (id, patch) => apiFetch(`/api/admin/users/${id}`, { method: "PATCH", body: patch }),
   adminRegenerateKey: (id) => apiFetch(`/api/admin/users/${id}/regenerate-key`, { method: "POST" }),
   adminDeleteUser: (id) => apiFetch(`/api/admin/users/${id}`, { method: "DELETE" }),
+
+  // ---- projects ----
+  listProjects: () => apiFetch("/api/projects"),
+  getProject: (id) => apiFetch(`/api/projects/${id}`),
+  createProject: (name, description) =>
+    apiFetch("/api/projects", { method: "POST", body: { name, description } }),
+  updateProject: (id, patch) => apiFetch(`/api/projects/${id}`, { method: "PATCH", body: patch }),
+  deleteProject: (id) => apiFetch(`/api/projects/${id}`, { method: "DELETE" }),
+  uploadProjectZip: (id, file, { replace = true } = {}) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("replace", replace ? "true" : "false");
+    return apiFetch(`/api/projects/${id}/upload`, { method: "POST", body: form });
+  },
+  indexProject: (id) => apiFetch(`/api/projects/${id}/index`, { method: "POST" }),
 };
 
 export { ApiError };

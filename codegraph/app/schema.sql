@@ -12,8 +12,25 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Projects: one codebase each. Source lives on disk under
+-- PROJECTS_ROOT/<slug>; the graph tables below are scoped to a project
+-- via project_id so multiple codebases can be indexed side by side.
+CREATE TABLE IF NOT EXISTS projects (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    slug            TEXT NOT NULL UNIQUE,   -- directory name under PROJECTS_ROOT
+    description     TEXT,
+    status          TEXT NOT NULL DEFAULT 'empty',  -- empty | ready | indexing | error
+    last_indexed_at TEXT,
+    last_index_stats TEXT,   -- JSON blob: {files, nodes, edges, unresolved}
+    last_error      TEXT,
+    created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS nodes (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     type         TEXT NOT NULL,      -- File, Module, Function, Class, ConfigKey, Route, Component, ApiCall, DBTable
     name         TEXT NOT NULL,
     file_path    TEXT,
@@ -22,11 +39,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     language     TEXT,
     signature    TEXT,
     docstring    TEXT,
-    UNIQUE(type, name, file_path, line_start)
+    UNIQUE(project_id, type, name, file_path, line_start)
 );
 
 CREATE TABLE IF NOT EXISTS edges (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     source_id      INTEGER NOT NULL,
     target_id      INTEGER,               -- NULL if unresolved
     type           TEXT NOT NULL,         -- imports, calls, reads_config, writes_config, renders, routes_to, calls_api, depends_on, queries_table
@@ -38,8 +56,10 @@ CREATE TABLE IF NOT EXISTS edges (
 
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_edges_project ON edges(project_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
 CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes(file_path);
+CREATE INDEX IF NOT EXISTS idx_nodes_project ON nodes(project_id);
 
 -- Full text search over node identity/signature/docstring (verbatim text, not generated)
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(

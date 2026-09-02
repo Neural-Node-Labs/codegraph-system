@@ -6,11 +6,17 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./codegraph/sample_repo:/repo:ro   # point this at your own repo
+      # Projects are now managed from the UI/API (create a project, then
+      # upload a .zip of its source, which is unzipped here automatically).
+      # codegraph_data holds both the SQLite graph DB and every project's
+      # extracted source under /data/projects/<slug>.
       - codegraph_data:/data
+      # Optional: set REPO_PATH to seed a "default" project on first boot
+      # from a repo already on disk (back-compat with single-repo setups).
+      - ./codegraph/sample_repo:/repo:ro
     environment:
       - REPO_PATH=/repo
-      - REINDEX=true
+      - PROJECTS_ROOT=/data/projects
       - CODEGRAPH_SECRET_KEY=change-this-in-production
       - ADMIN_PASSWORD=admin123
     restart: unless-stopped

@@ -10,7 +10,7 @@ COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
 ENV CODEGRAPH_DB=/data/graph.db
-ENV REPO_PATH=/repo
+ENV PROJECTS_ROOT=/data/projects
 ENV PYTHONPATH=/code
 
 VOLUME ["/data"]

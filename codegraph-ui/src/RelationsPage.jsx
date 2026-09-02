@@ -10,7 +10,7 @@ const TYPE_COLOR = {
 
 const PAGE_SIZE = 50;
 
-export default function RelationsPage({ onInspectNode }) {
+export default function RelationsPage({ projectId, onInspectNode }) {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -21,10 +21,16 @@ export default function RelationsPage({ onInspectNode }) {
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
+    if (!projectId) {
+      setRows([]);
+      setTotal(0);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const resp = await api.edges({
+      const resp = await api.edges(projectId, {
         type: typeFilter || undefined,
         resolved: resolvedFilter === "" ? undefined : resolvedFilter === "true",
         q: query || undefined,
@@ -38,7 +44,7 @@ export default function RelationsPage({ onInspectNode }) {
     } finally {
       setLoading(false);
     }
-  }, [typeFilter, resolvedFilter, query, page]);
+  }, [projectId, typeFilter, resolvedFilter, query, page]);
 
   useEffect(() => {
     setPage(0);
@@ -47,6 +53,14 @@ export default function RelationsPage({ onInspectNode }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  if (!projectId) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-xs" style={{ color: "#4c5566" }}>
+        Select a project to view its relations.
+      </div>
+    );
+  }
 
   const NodeCell = ({ id, name, type, file }) => {
     if (id == null) {

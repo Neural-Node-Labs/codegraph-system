@@ -4,6 +4,8 @@ each file, and writes a fact-based dependency graph to SQLite.
 
 No LLM calls occur anywhere in this file. Every node/edge is derived by
 mechanical rule from source text (AST or regex) and traceable to file+line.
+Every fact is scoped to a project_id so several codebases can be indexed
+side by side in the same database.
 """
 import sys
 import os
@@ -80,10 +82,10 @@ def path_matches_route(call_path, route_path):
     return True
 
 
-def index_repo(repo_root: str, reset: bool = True):
+def index_repo(project_id: int, repo_root: str, reset: bool = True):
     conn = init_db()
     if reset:
-        clear_graph(conn)
+        clear_graph(conn, project_id)
     repo_root = str(Path(repo_root).resolve())
 
     file_node_ids = {}
@@ -97,7 +99,7 @@ def index_repo(repo_root: str, reset: bool = True):
         ext = path.suffix if path.suffix else (path.name if path.name.startswith(".env") else "")
         rel = str(path.relative_to(repo_root))
         if ext in PY_EXT or ext in JS_EXT or ext in ENV_EXT or ext in STRUCTURED_CONFIG_EXT:
-            file_id = upsert_node(conn, "File", rel, file_path=rel, language=ext.lstrip("."))
+            file_id = upsert_node(conn, project_id, "File", rel, file_path=rel, language=ext.lstrip("."))
             file_node_ids[rel] = file_id
             stats["files"] += 1
         else:
@@ -110,49 +112,49 @@ def index_repo(repo_root: str, reset: bool = True):
             py_results[rel] = res
 
             for name, ln, end_ln, sig, doc in res.functions:
-                fid = upsert_node(conn, "Function", f"{res.module_name}.{name}", file_path=rel,
+                fid = upsert_node(conn, project_id, "Function", f"{res.module_name}.{name}", file_path=rel,
                                    line_start=ln, line_end=end_ln, language="python",
                                    signature=sig, docstring=doc)
-                add_edge(conn, file_id, fid, "depends_on", True)
+                add_edge(conn, project_id, file_id, fid, "depends_on", True)
                 for _fname, method, mpath, mline in [r for r in res.routes if r[0] == name]:
-                    rid = upsert_node(conn, "Route", f"{method} {mpath}", file_path=rel,
+                    rid = upsert_node(conn, project_id, "Route", f"{method} {mpath}", file_path=rel,
                                        line_start=mline, language="python", signature=f"{method} {mpath}")
-                    add_edge(conn, fid, rid, "routes_to", True)
+                    add_edge(conn, project_id, fid, rid, "routes_to", True)
                     route_nodes.append((rid, method, mpath))
 
             for name, ln, end_ln, doc in res.classes:
-                upsert_node(conn, "Class", f"{res.module_name}.{name}", file_path=rel,
+                upsert_node(conn, project_id, "Class", f"{res.module_name}.{name}", file_path=rel,
                             line_start=ln, line_end=end_ln, language="python", docstring=doc)
 
         elif ext in JS_EXT:
             res = parse_js_file(str(path), repo_root)
             js_results[rel] = res
             for name, ln, sig in res.functions:
-                upsert_node(conn, "Function", f"{rel}::{name}", file_path=rel, line_start=ln,
+                upsert_node(conn, project_id, "Function", f"{rel}::{name}", file_path=rel, line_start=ln,
                             language="javascript", signature=sig)
             for comp, ln in res.renders:
-                upsert_node(conn, "Component", comp, language="javascript")
+                upsert_node(conn, project_id, "Component", comp, language="javascript")
 
             _, routes = parse_express_routes(str(path), repo_root)
             for method, rpath, ln in routes:
-                rid = upsert_node(conn, "Route", f"{method} {rpath}", file_path=rel,
+                rid = upsert_node(conn, project_id, "Route", f"{method} {rpath}", file_path=rel,
                                    line_start=ln, language="javascript", signature=f"{method} {rpath}")
-                add_edge(conn, file_id, rid, "routes_to", True)
+                add_edge(conn, project_id, file_id, rid, "routes_to", True)
                 route_nodes.append((rid, method, rpath))
 
         elif ext in ENV_EXT:
             _, keys = parse_env_file(str(path), repo_root)
             for key, ln, val in keys:
-                kid = upsert_node(conn, "ConfigKey", key, file_path=rel, line_start=ln,
+                kid = upsert_node(conn, project_id, "ConfigKey", key, file_path=rel, line_start=ln,
                                    language="env", signature=val)
-                add_edge(conn, file_id, kid, "depends_on", True)
+                add_edge(conn, project_id, file_id, kid, "depends_on", True)
 
         elif ext in STRUCTURED_CONFIG_EXT:
             _, keys = parse_structured_config(str(path), repo_root)
             for key, ln, val in keys:
-                kid = upsert_node(conn, "ConfigKey", key, file_path=rel, line_start=ln,
+                kid = upsert_node(conn, project_id, "ConfigKey", key, file_path=rel, line_start=ln,
                                    language=ext.lstrip("."), signature=val)
-                add_edge(conn, file_id, kid, "depends_on", True)
+                add_edge(conn, project_id, file_id, kid, "depends_on", True)
 
     conn.commit()
 
@@ -164,21 +166,21 @@ def index_repo(repo_root: str, reset: bool = True):
             if not target_rel and fallback_mod:
                 target_rel = module_path_to_file(fallback_mod, repo_root)
             if target_rel and target_rel in file_node_ids:
-                add_edge(conn, file_id, file_node_ids[target_rel], "imports", True, raw_expression=mod)
+                add_edge(conn, project_id, file_id, file_node_ids[target_rel], "imports", True, raw_expression=mod)
             elif fallback_mod is None and mod.split(".")[0] not in sys.stdlib_module_names:
-                add_edge(conn, file_id, None, "imports", False, raw_expression=mod)
+                add_edge(conn, project_id, file_id, None, "imports", False, raw_expression=mod)
                 stats["unresolved"] += 1
             elif fallback_mod is not None:
-                add_edge(conn, file_id, None, "imports", False, raw_expression=mod)
+                add_edge(conn, project_id, file_id, None, "imports", False, raw_expression=mod)
                 stats["unresolved"] += 1
 
         for scope, key, ln in res.config_reads:
-            cur = conn.execute("SELECT id FROM nodes WHERE type='ConfigKey' AND name=?", (key,))
+            cur = conn.execute("SELECT id FROM nodes WHERE project_id=? AND type='ConfigKey' AND name=?", (project_id, key))
             row = cur.fetchone()
             if row:
-                add_edge(conn, file_id, row["id"], "reads_config", True, raw_expression=key)
+                add_edge(conn, project_id, file_id, row["id"], "reads_config", True, raw_expression=key)
             else:
-                add_edge(conn, file_id, None, "reads_config", False, raw_expression=key)
+                add_edge(conn, project_id, file_id, None, "reads_config", False, raw_expression=key)
                 stats["unresolved"] += 1
 
     for rel, res in js_results.items():
@@ -186,33 +188,34 @@ def index_repo(repo_root: str, reset: bool = True):
         for mod, ln in res.imports:
             target_rel = resolve_js_import(rel, mod, repo_root)
             if target_rel and target_rel in file_node_ids:
-                add_edge(conn, file_id, file_node_ids[target_rel], "imports", True, raw_expression=mod)
+                add_edge(conn, project_id, file_id, file_node_ids[target_rel], "imports", True, raw_expression=mod)
             elif mod.startswith("."):
-                add_edge(conn, file_id, None, "imports", False, raw_expression=mod)
+                add_edge(conn, project_id, file_id, None, "imports", False, raw_expression=mod)
                 stats["unresolved"] += 1
 
         for method, api_path, ln in res.api_calls:
-            call_id = upsert_node(conn, "ApiCall", f"{method} {api_path}", file_path=rel,
+            call_id = upsert_node(conn, project_id, "ApiCall", f"{method} {api_path}", file_path=rel,
                                    line_start=ln, language="javascript", signature=f"{method} {api_path}")
-            add_edge(conn, file_id, call_id, "calls_api", False, raw_expression=api_path)
+            add_edge(conn, project_id, file_id, call_id, "calls_api", False, raw_expression=api_path)
             matched = False
             for rid, rmethod, rpath in route_nodes:
                 if rmethod == method and path_matches_route(api_path, rpath):
-                    add_edge(conn, call_id, rid, "calls_api", True)
+                    add_edge(conn, project_id, call_id, rid, "calls_api", True)
                     matched = True
             if not matched:
                 stats["unresolved"] += 1
 
     conn.commit()
 
-    stats["nodes"] = conn.execute("SELECT COUNT(*) c FROM nodes").fetchone()["c"]
-    stats["edges"] = conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
+    stats["nodes"] = conn.execute("SELECT COUNT(*) c FROM nodes WHERE project_id=?", (project_id,)).fetchone()["c"]
+    stats["edges"] = conn.execute("SELECT COUNT(*) c FROM edges WHERE project_id=?", (project_id,)).fetchone()["c"]
     conn.close()
     return stats
 
 
 if __name__ == "__main__":
     root = sys.argv[1] if len(sys.argv) > 1 else "/repo"
-    stats = index_repo(root, reset=True)
-    print(f"Indexed repo at {root}")
+    pid = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    stats = index_repo(pid, root, reset=True)
+    print(f"Indexed repo at {root} (project_id={pid})")
     print(stats)

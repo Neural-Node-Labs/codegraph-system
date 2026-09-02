@@ -1,14 +1,16 @@
 #!/bin/sh
 set -e
 
-REPO_PATH="${REPO_PATH:-/repo}"
-REINDEX="${REINDEX:-true}"
+PROJECTS_ROOT="${PROJECTS_ROOT:-/data/projects}"
+mkdir -p "$PROJECTS_ROOT"
 
-if [ "$REINDEX" = "true" ]; then
-  echo "[codegraph] Indexing repo at $REPO_PATH ..."
-  python -m app.indexer "$REPO_PATH"
-else
-  echo "[codegraph] Skipping re-index (REINDEX=false), using existing DB."
+# Legacy single-repo bootstrap: if REPO_PATH points at a non-empty directory
+# and no project has been created yet, seed a "default" project from it so
+# existing single-repo setups keep working after upgrading. New setups
+# should create/upload projects from the UI or API instead.
+if [ -n "$REPO_PATH" ] && [ -d "$REPO_PATH" ] && [ "$(ls -A "$REPO_PATH" 2>/dev/null)" ]; then
+  echo "[codegraph] REPO_PATH is set - bootstrapping a default project from it if none exist yet ..."
+  python -m app.bootstrap_default_project "$REPO_PATH" || true
 fi
 
 echo "[codegraph] Starting API server on :8000 ..."
